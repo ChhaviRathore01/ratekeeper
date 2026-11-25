@@ -11,12 +11,22 @@ jobs:
     strategy:
       matrix:
         go: ["1.21", "stable"]
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      REDIS_ADDR: localhost:6379
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
-          cache: false # no go.sum until we add dependencies
       - name: Vet
         run: go vet ./...
       - name: Test
@@ -31,7 +41,6 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: stable
-          cache: false
       - uses: golangci/golangci-lint-action@v8
         with:
           version: latest
