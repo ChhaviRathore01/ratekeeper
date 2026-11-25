@@ -19,7 +19,7 @@ func (f failingStore) Take(context.Context, string, ratekeeper.Limit, int, time.
 func newLimiter(t *testing.T, limit ratekeeper.Limit, opts ...ratekeeper.Option) *ratekeeper.Limiter {
 	t.Helper()
 	s := memory.New(memory.WithCleanupInterval(0))
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { s.Close() })
 	l, err := ratekeeper.New(s, limit, opts...)
 	if err != nil {
 		t.Fatal(err)

@@ -116,9 +116,8 @@ func (s *Store) Len() int {
 
 // Close stops the background cleanup goroutine. It is safe to call more
 // than once.
-func (s *Store) Close() error {
+func (s *Store) Close() {
 	s.closeOnce.Do(func() { close(s.stop) })
-	return nil
 }
 
 func (s *Store) janitor(every time.Duration) {

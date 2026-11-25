@@ -15,7 +15,7 @@ var t0 = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 func newStore(t *testing.T) *Store {
 	t.Helper()
 	s := New(WithCleanupInterval(0))
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { s.Close() })
 	return s
 }
 
@@ -196,8 +196,8 @@ func TestConcurrentTakeNeverOverAdmits(t *testing.T) {
 
 func TestCloseIsIdempotent(t *testing.T) {
 	s := New(WithCleanupInterval(time.Millisecond))
-	_ = s.Close()
-	_ = s.Close()
+	s.Close()
+	s.Close()
 }
 
 func BenchmarkTakeSingleKey(b *testing.B) {
