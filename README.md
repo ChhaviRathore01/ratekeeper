@@ -7,7 +7,7 @@
 A distributed rate limiter for Go with pluggable storage backends. Enforce the
 same limit on a single process or across every instance of your service.
 
-> **Status:** early development (v0.2). The API may change before v1.0.
+> **Status:** early development (v0.3). The API may change before v1.0.
 
 ## Features
 
@@ -15,6 +15,7 @@ same limit on a single process or across every instance of your service.
 - **Two algorithms, one behaviour:** token bucket (in-memory) and GCRA (Redis), verified identical by a shared conformance suite
 - Uses the Redis server clock by default, so clock skew between app servers cannot affect limits
 - Redis Cluster safe (single key per operation); idle keys expire automatically
+- **Drop-in middleware** for `net/http` and gRPC (unary + streaming), with standard rate limit headers
 - Configurable rate, period, and burst
 - Atomic `AllowN` (all-or-nothing) for weighted requests
 - Rich results: `Remaining`, `RetryAfter`, `ResetAt` — ready for `X-RateLimit-*` / `Retry-After` headers
@@ -56,6 +57,56 @@ if !res.Allowed {
     return
 }
 ```
+
+## HTTP middleware
+
+```go
+limiter, _ := ratekeeper.New(store, ratekeeper.PerMinute(60))
+
+handler := httplimit.Middleware(limiter,
+    httplimit.WithKeyFunc(httplimit.ByForwardedFor(1)), // behind one load balancer
+    httplimit.WithSkip(func(r *http.Request) bool { return r.URL.Path == "/healthz" }),
+)(mux)
+```
+
+Responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+`X-RateLimit-Reset` (Unix seconds). Denied requests get
+`429 Too Many Requests` with `Retry-After`.
+
+| Option | Purpose |
+|---|---|
+| `WithKeyFunc` | `ByIP` (default), `ByForwardedFor(n)`, `ByHeader("X-API-Key")`, or your own |
+| `WithCost` | make expensive endpoints consume more tokens |
+| `WithSkip` | exempt health checks, internal traffic, … |
+| `WithDeniedHandler` / `WithErrorHandler` | custom 429 / error responses (e.g. JSON) |
+
+> **Why `ByForwardedFor(n)` and not just the first `X-Forwarded-For` entry?**
+> Clients can send any `X-Forwarded-For` value they like, so keying on the
+> leftmost IP lets an attacker get a fresh limit on every request. Each
+> trusted proxy *appends* the address it saw, so the real client is the
+> entry `n` positions from the right.
+
+Try it:
+
+```sh
+go run ./examples/httpserver            # or: -redis localhost:6379
+for i in $(seq 1 6); do curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/hello; done
+```
+
+## gRPC interceptors
+
+```go
+srv := grpc.NewServer(
+    grpc.ChainUnaryInterceptor(grpclimit.UnaryServerInterceptor(limiter,
+        grpclimit.WithKeyFunc(grpclimit.ByMetadata("x-api-key")))),
+    grpc.ChainStreamInterceptor(grpclimit.StreamServerInterceptor(limiter)),
+)
+```
+
+Denied calls fail with `codes.ResourceExhausted`; response metadata carries
+`x-ratelimit-*` and `retry-after`. Key by peer IP (default), metadata, or
+`PerMethod(...)` to give every RPC its own limit. Streams count once when
+opened.
 
 ## Design
 
@@ -135,7 +186,7 @@ REDIS_ADDR=localhost:6379 go test -run xxx -bench . ./store/redisstore
 - [x] v0.1 — core API, in-memory token bucket store
 - [x] v0.2 — Redis store (GCRA in atomic Lua), shared store conformance suite
 - [ ] v0.2.x — sliding-window algorithm
-- [ ] v0.3 — `net/http` and gRPC middleware, standard rate limit headers
+- [x] v0.3 — `net/http` and gRPC middleware, standard rate limit headers
 - [ ] v0.4 — hybrid local/global mode (local token leasing to cut backend round-trips)
 - [ ] v1.0 — Prometheus/OpenTelemetry metrics, docs, stable API
 
