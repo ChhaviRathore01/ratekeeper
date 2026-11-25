@@ -52,10 +52,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hello", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintln(w, "hello!")
+		_, _ = fmt.Fprintln(w, "hello!")
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintln(w, "ok")
+		_, _ = fmt.Fprintln(w, "ok")
 	})
 
 	handler := httplimit.Middleware(limiter,

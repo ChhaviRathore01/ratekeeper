@@ -165,8 +165,10 @@ func TestCost(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w.Code
 	}
-	if post() != http.StatusOK || post() != http.StatusOK {
-		t.Fatal("two POSTs of cost 5 should fit in 10")
+	for i := 0; i < 2; i++ {
+		if code := post(); code != http.StatusOK {
+			t.Fatalf("POST %d: status %d; two POSTs of cost 5 should fit in 10", i, code)
+		}
 	}
 	if post() != http.StatusTooManyRequests {
 		t.Fatal("third POST should be denied")
