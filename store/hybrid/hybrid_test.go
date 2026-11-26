@@ -331,7 +331,7 @@ func BenchmarkRealRedis(b *testing.B) {
 		b.Skip("REDIS_ADDR not set")
 	}
 	client := redis.NewClient(&redis.Options{Addr: addr})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	// High enough that the benchmark never hits the limit, so it measures
 	// the cost of an allowed request.
 	limit := ratekeeper.PerSecond(100_000_000)
