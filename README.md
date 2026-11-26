@@ -7,7 +7,7 @@
 A distributed rate limiter for Go with pluggable storage backends. Enforce the
 same limit on a single process or across every instance of your service.
 
-> **Status:** early development (v0.3). The API may change before v1.0.
+> **Status:** early development (v0.4). The API may change before v1.0.
 
 ## Features
 
@@ -15,6 +15,7 @@ same limit on a single process or across every instance of your service.
 - **Two algorithms, one behaviour:** token bucket (in-memory) and GCRA (Redis), verified identical by a shared conformance suite
 - Uses the Redis server clock by default, so clock skew between app servers cannot affect limits
 - Redis Cluster safe (single key per operation); idle keys expire automatically
+- **Hybrid mode:** lease tokens from Redis in batches and serve from memory — up to **100× fewer Redis calls and 32× lower latency**, with a proof-by-simulation that it never over-admits
 - **Drop-in middleware** for `net/http` and gRPC (unary + streaming), with standard rate limit headers
 - Configurable rate, period, and burst
 - Atomic `AllowN` (all-or-nothing) for weighted requests
@@ -35,6 +36,9 @@ go get github.com/ChhaviRathore01/ratekeeper
 ```go
 // Shared across all instances:
 store := redisstore.New(redis.NewClient(&redis.Options{Addr: "localhost:6379"}))
+
+// Or with local token leasing for high-volume keys:
+// store := hybrid.New(redisstore.New(client), hybrid.WithBatchSize(20))
 
 // Or single-process:
 // store := memory.New()
@@ -121,6 +125,7 @@ request ──► │   Limiter    │  validates input, applies key prefix,
             ├──────────────┤
             │ memory       │  token bucket, single process
             │ redisstore   │  GCRA in Lua, shared across instances
+            │ hybrid       │  wraps any store: local leases + batching
             └──────────────┘
 ```
 
@@ -154,6 +159,51 @@ to make `RetryAfter` come out shorter than the true wait. The script keeps
 timestamps relative to a 2025 epoch and does all arithmetic on small
 offsets from `now`.
 
+### Hybrid mode (token leasing)
+
+At high volume, one Redis round-trip per request becomes the bottleneck.
+[`store/hybrid`](store/hybrid/hybrid.go) wraps any store and, on a miss,
+takes a *batch* of tokens in one call and serves the following requests for
+that key from memory.
+
+```
+           instance A                     instance B
+  req ─► [lease: 7 tokens] ─┐    ┌─ [lease: 2 tokens] ◄─ req
+  req ─►        │           │    │          │          ◄─ req
+            (empty)         ▼    ▼      (empty)
+                       ┌─────────────┐
+                       │   Redis     │  one Take(n=batch) per lease
+                       └─────────────┘
+```
+
+**Correctness argument.** Every token used locally was granted by the
+backend first, so the cluster can never admit more than the limit. The cost
+runs the other way: tokens leased by one instance can't be used by another,
+and unused tokens are dropped when the lease expires (default 1s). Worst case
+is `instances × (batch − 1)` *fewer* admissions than the limit.
+
+Two refinements keep that cost low:
+
+- **Adaptive leasing** — when the backend reports fewer tokens left than one
+  batch, the instance stops leasing and asks for exactly what each request
+  needs, so behaviour near the limit is exact.
+- **Negative caching** — when the backend says "no tokens for 40ms", the
+  instance denies that key locally for 40ms. Other instances can only consume
+  tokens, never create them, so this is always safe.
+
+Leased tokens also keep serving traffic through short backend outages.
+
+**Simulation results** (5 instances sharing one backend, 10s of simulated
+traffic, batch 20 — see `TestSimulation*`):
+
+| Load | Admitted vs exact limiter | Backend calls |
+|---|---|---|
+| 50% of limit | 100% (no false denials) | **20× fewer** |
+| 500% of limit | **100.00%** (109,990 vs 109,990) | 3.6× fewer |
+
+Under overload, the saving comes from negative caching; leasing deliberately
+switches off near the limit.
+
 ### Conformance suite
 
 [`store/storetest`](store/storetest/storetest.go) is a shared test suite
@@ -169,16 +219,18 @@ Apple M-series, Go 1.21, Redis 8 on localhost:
 |---|---|---|---|
 | memory | single goroutine, one key | ~16 | 0 |
 | memory | 12 goroutines, one hot key | ~104 | 0 |
-| redisstore | 12 goroutines, one hot key | ~12,100 (~82k checks/s) | 21 |
+| redisstore | 12 goroutines, one hot key | ~12,200 (~82k checks/s) | 22 |
+| hybrid (batch 10) over redisstore | 12 goroutines, one hot key | ~3,200 — 0.1 Redis calls/op | 2 |
+| hybrid (batch 100) over redisstore | 12 goroutines, one hot key | **~380 — 0.01 Redis calls/op** | 0 |
 
-The Redis cost is dominated by the network round-trip, which is what the
-planned hybrid mode (v0.4) addresses.
+The Redis cost is dominated by the network round-trip; hybrid mode removes
+most of them.
 
 Run them yourself:
 
 ```sh
 go test -run xxx -bench . ./store/memory
-REDIS_ADDR=localhost:6379 go test -run xxx -bench . ./store/redisstore
+REDIS_ADDR=localhost:6379 go test -run xxx -bench . ./store/redisstore ./store/hybrid
 ```
 
 ## Roadmap
@@ -187,7 +239,7 @@ REDIS_ADDR=localhost:6379 go test -run xxx -bench . ./store/redisstore
 - [x] v0.2 — Redis store (GCRA in atomic Lua), shared store conformance suite
 - [ ] v0.2.x — sliding-window algorithm
 - [x] v0.3 — `net/http` and gRPC middleware, standard rate limit headers
-- [ ] v0.4 — hybrid local/global mode (local token leasing to cut backend round-trips)
+- [x] v0.4 — hybrid mode: local token leasing, adaptive batching, negative caching
 - [ ] v1.0 — Prometheus/OpenTelemetry metrics, docs, stable API
 
 ## Development
